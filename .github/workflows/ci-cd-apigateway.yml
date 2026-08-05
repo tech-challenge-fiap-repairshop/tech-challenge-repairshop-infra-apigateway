@@ -1,0 +1,112 @@
+name: 🚀 AWS API Gateway CI/CD Pipeline
+
+on:
+  push:
+    branches: [ 'main' ]
+    paths:
+      - '*.tf'
+      - 'environments/**'
+      - '.github/workflows/ci-cd-apigateway.yml'
+  pull_request:
+    branches: [ 'main' ]
+    paths:
+      - '*.tf'
+      - 'environments/**'
+      - '.github/workflows/ci-cd-apigateway.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Ambiente de Deploy (prd, dev, hml)'
+        required: true
+        default: 'prd'
+        type: choice
+        options:
+          - prd
+          - dev
+          - hml
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: 'us-east-1'
+
+jobs:
+  deploy:
+    name: "🚀 Build, Test & Deploy (AWS API Gateway)"
+    if: |
+      !contains(github.event.head_commit.message, '[skip-ci]') &&
+      !contains(github.event.head_commit.message, '[skip ci]') &&
+      !contains(github.event.head_commit.message, '[ci skip]') &&
+      !contains(github.event.pull_request.title, '[skip-ci]') &&
+      !contains(github.event.pull_request.title, '[skip ci]') &&
+      !contains(github.event.pull_request.title, '[ci skip]')
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'prd' }}
+    permissions:
+      contents: read
+
+    env:
+      ENV: ${{ github.event.inputs.environment || 'prd' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Ensure S3 Bucket for Terraform State exists
+        run: |
+          BUCKET_NAME="fiap-repairshop2"
+          AWS_REGION="${{ env.AWS_REGION }}"
+          
+          if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
+            echo "Bucket $BUCKET_NAME já existe."
+          else
+            echo "Bucket $BUCKET_NAME não existe. Criando..."
+            aws s3api create-bucket --bucket "$BUCKET_NAME" --region "$AWS_REGION"
+            aws s3api put-bucket-versioning --bucket "$BUCKET_NAME" --versioning-configuration Status=Enabled
+            aws s3api put-bucket-encryption --bucket "$BUCKET_NAME" --server-side-encryption-configuration '{
+              "Rules": [
+                {
+                  "ApplyServerSideEncryptionByDefault": {
+                    "SSEAlgorithm": "AES256"
+                  }
+                }
+              ]
+            }'
+            aws s3api put-public-access-block --bucket "$BUCKET_NAME" --public-access-block-configuration '{
+              "BlockPublicAcls": true,
+              "IgnorePublicAcls": true,
+              "BlockPublicPolicy": true,
+              "RestrictPublicBuckets": true
+            }'
+          fi
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.8.5"
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="bucket=fiap-repairshop2" \
+            -backend-config="key=terraform-config/apigateway-tfstate/${ENV}/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}"
+
+      - name: Terraform Plan
+        run: |
+          terraform plan -var-file="environments/${ENV}.tfvars"
+
+      - name: Terraform Apply (Somente na branch main ou disparo manual)
+        if: (github.ref == 'refs/heads/main' && github.event_name == 'push') || github.event_name == 'workflow_dispatch'
+        run: |
+          terraform apply -auto-approve -var-file="environments/${ENV}.tfvars"
