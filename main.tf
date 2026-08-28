@@ -6,9 +6,9 @@ locals {
   api_name         = "repairshop-apigw-${var.environment}"
   lambda_auth_name = "repairshop-lambda-auth-${var.environment}"
 
-  # Se a busca dinâmica via data "aws_lb" encontrar o Load Balancer no EKS, utiliza o DNS dele.
+  # Se a busca dinâmica via data "aws_lb" encontrar o Load Balancer no EKS, utiliza o DNS dele na porta 8080.
   # Caso contrário, utiliza o valor informado na variável var.app_lb_url como fallback.
-  app_lb_dns_name = try(data.aws_lb.app_k8s[0].dns_name, "") != "" ? "http://${data.aws_lb.app_k8s[0].dns_name}" : var.app_lb_url
+  app_lb_dns_name = try(data.aws_lb.app_k8s[0].dns_name, "") != "" ? "http://${data.aws_lb.app_k8s[0].dns_name}:8080" : (var.app_lb_url != "" ? var.app_lb_url : "http://localhost:8080")
 }
 
 # -----------------------------------------------------------------------------
@@ -81,4 +81,17 @@ resource "aws_apigatewayv2_route" "app_proxy_route" {
   api_id    = aws_apigatewayv2_api.api.id
   route_key = "ANY /{proxy+}"
   target    = "integrations/${aws_apigatewayv2_integration.app_proxy.id}"
+}
+
+resource "aws_apigatewayv2_integration" "app_root" {
+  api_id             = aws_apigatewayv2_api.api.id
+  integration_type   = "HTTP_PROXY"
+  integration_uri    = local.app_lb_dns_name
+  integration_method = "ANY"
+}
+
+resource "aws_apigatewayv2_route" "app_root_route" {
+  api_id    = aws_apigatewayv2_api.api.id
+  route_key = "ANY /"
+  target    = "integrations/${aws_apigatewayv2_integration.app_root.id}"
 }
