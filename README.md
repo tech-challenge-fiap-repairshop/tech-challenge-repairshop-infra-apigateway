@@ -34,18 +34,26 @@ A infraestrutura utiliza o **AWS API Gateway v2 (HTTP API)** devido à sua altí
 
 ```mermaid
 flowchart LR
-    Client["📱 Clientes / Web / Mobile\n(Internet)"] -->|"HTTPS / HTTP"| APIGW["🚪 AWS API Gateway HTTP v2\n(repairshop-api-gateway)"]
+    %% Definições de Estilo
+    classDef clientStyle fill:#ECEFF1,stroke:#607D8B,stroke-width:2px,color:#263238
+    classDef apigwStyle fill:#FCE4EC,stroke:#C2185B,stroke-width:2px,color:#880E4F
+    classDef routeStyle fill:#EDE7F6,stroke:#512DA8,stroke-width:1.5px,color:#311B92
+    classDef lambdaStyle fill:#FFF3E0,stroke:#E65100,stroke-width:2px,color:#BF360C
+    classDef nlbStyle fill:#E1F5FE,stroke:#0288D1,stroke-width:2px,color:#01579B
+    classDef eksStyle fill:#E8EAF6,stroke:#303F9F,stroke-width:2px,color:#1A237E
+
+    Client["📱 Clientes / Web / Mobile\n(Internet Pública)"]:::clientStyle -->|"HTTPS (Porta 443)"| APIGW["🚪 AWS API Gateway HTTP v2\n(repairshop-api-gateway)"]:::apigwStyle
     
-    subgraph Routes["Estratégia de Roteamento"]
+    subgraph Routes["🧭 Estratégia de Roteamento de Entrada"]
         direction TB
-        AuthRoute["POST /auth/login\n(Autenticação Serverless)"]
-        ProxyRoute["ANY /{proxy+}\n(Catch-all Proxy Transparente)"]
+        AuthRoute["🔐 POST /auth/login\n(Autenticação Serverless)"]:::routeStyle
+        ProxyRoute["🌐 ANY /{proxy+}\n(Catch-all Proxy Transparente)"]:::routeStyle
     end
 
-    subgraph AWS_Compute["Camada de Computação"]
-        Lambda["⚡ AWS Lambda Auth\n(Java 21 Clean Arch)"]
-        NLB["⚖️ AWS Network Load Balancer\n(Kubernetes Service)"]
-        EKSPods["🚀 EKS App Pods\n(Spring Boot / Swagger UI)"]
+    subgraph AWS_Compute["☁️ Camada de Computação e Execução (VPC Privada)"]
+        Lambda["⚡ AWS Lambda Auth\n(Java 21 Clean Arch / JWT)"]:::lambdaStyle
+        NLB["⚖️ AWS Network Load Balancer\n(Kubernetes Service / Porta 8080)"]:::nlbStyle
+        EKSPods["☸️ EKS App Pods\n(Spring Boot / Swagger UI)"]:::eksStyle
     end
 
     APIGW --> AuthRoute -->|"AWS_PROXY Integration"| Lambda
@@ -84,14 +92,23 @@ A esteira de integração e entrega contínua do API Gateway é automatizada pel
 
 ```mermaid
 flowchart TD
-    A["🎯 Trigger (Push/PR branch main ou Workflow Dispatch)"] --> B["⚙️ Setup & Auth AWS (Configure AWS Credentials)"]
-    B --> C["📦 S3 State Check (Ensure Bucket fiap-repairshop2)"]
-    C --> D["⚡ Terraform Setup & Init (S3: terraform-config/apigateway-tfstate/${ENV})"]
-    D --> E["📝 Terraform Plan (Validação com environments/${ENV}.tfvars)"]
-    E --> F{"🌿 Branch é main ou Dispatch Manual?"}
-    F -- "Sim" --> G["🚀 Terraform Apply (-auto-approve)"]
-    F -- "Não (PR)" --> H["✅ Relatório do Plano de Execução"]
-    G --> I["📊 GitHub Step Summary (Métricas da Execução)"]
+    classDef triggerStyle fill:#E1F5FE,stroke:#0288D1,stroke-width:2px,color:#01579B
+    classDef stepStyle fill:#F3E5F5,stroke:#7B1FA2,stroke-width:2px,color:#4A148C
+    classDef gateStyle fill:#FFF9C4,stroke:#FBC02D,stroke-width:2px,color:#F57F17
+    classDef deployStyle fill:#E8F5E9,stroke:#388E3C,stroke-width:2px,color:#1B5E20
+    classDef reportStyle fill:#ECEFF1,stroke:#455A64,stroke-width:2px,color:#263238
+
+    A["🎯 Disparo / Trigger\n• Push ou PR (main, homolog, dev)\n• Workflow Dispatch Manual"]:::triggerStyle
+    A --> B["⚙️ Autenticação AWS\n(Configure AWS Credentials / IAM LabRole)"]:::stepStyle
+    B --> C["📦 Garantia do Bucket S3\n(Verifica/Cria fiap-repairshop2)"]:::stepStyle
+    C --> D["⚡ Setup & Terraform Init\n(S3: terraform-config/apigateway-tfstate/${ENV})"]:::stepStyle
+    D --> E["📝 Geração do Plano\n(terraform plan -var-file=environments/${ENV}.tfvars)"]:::stepStyle
+    E --> F{"🌿 Branch é 'main' com Push\nou Dispatch Manual?"}:::gateStyle
+    
+    F -- "✅ Sim (Deploy Aprovado)" --> G["🚀 Terraform Apply\n(terraform apply -auto-approve)"]:::deployStyle
+    F -- "🛡️ Não (PR ou Homologação)" --> H["📋 Modo Dry-Run / Plan Only\n(Validação de Rotas e Integrações)"]:::reportStyle
+    
+    G --> I["📊 GitHub Step Summary\n(Exporta URL Pública do API Gateway)"]:::reportStyle
     H --> I
 ```
 
@@ -115,6 +132,33 @@ flowchart TD
 > **Motivação Técnica:**
 > 1. **Economia de Minutos de Execução:** Como o API Gateway provisiona recursos leves e rápidos (tempo médio de 1 a 2 minutos), dividir o pipeline em múltiplos jobs adicionaria tempo de fila para novos runners, consumindo desnecessariamente o limite da conta GitHub.
 > 2. **Reaproveitamento de Estado e Contexto AWS:** Mantém as credenciais e conexões do Terraform inicializadas no runner, otimizando o tempo de feedback para o desenvolvedor.
+
+---
+
+## 🔀 Governança de Branches e Ciclo de Promoção (Git Flow)
+
+A governança do repositório segue isolamento estrito com aprovação controlada para promoção de ambientes:
+
+```mermaid
+flowchart LR
+    classDef branchDev fill:#E3F2FD,stroke:#1E88E5,stroke-width:2px,color:#0D47A1
+    classDef branchHml fill:#FFF3E0,stroke:#FB8C00,stroke-width:2px,color:#E65100
+    classDef branchMain fill:#E8F5E9,stroke:#43A047,stroke-width:2px,color:#1B5E20
+    classDef gateStyle fill:#FFEBEE,stroke:#E53935,stroke-width:2px,color:#B71C1C
+
+    Dev["🌿 Feature / Fix / Chore\n(feat/*, fix/*, chore/*)"]:::branchDev
+    PR_HML{"Pull Request\npara homolog"}:::gateStyle
+    HML["🛡️ Branch homolog\n(Ambiente hml / Validação)"]:::branchHml
+    PR_MAIN{"Pull Request\npara main"}:::gateStyle
+    Main["🚀 Branch main\n(Deploy em Produção)"]:::branchMain
+
+    Dev -->|"Abertura de PR"| PR_HML
+    PR_HML -->|"Validação & Merge"| HML
+    HML -->|"Abertura de PR de Promoção"| PR_MAIN
+    PR_MAIN -->|"Aprovação Manual Obrigatória"| Main
+```
+
+> ⚠️ **Regra de Governança:** É expressamente proibido commit ou push direto na branch `main`. Toda alteração deve passar pelo pipeline de validação e aprovação formal.
 
 ---
 
