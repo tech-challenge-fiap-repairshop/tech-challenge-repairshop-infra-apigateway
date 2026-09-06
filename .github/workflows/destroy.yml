@@ -1,0 +1,77 @@
+name: 💥 Destroy API Gateway Infrastructure (Manual)
+
+# ============================================================================
+# Trigger: Gatilho manual com seleção de ambiente e input de segurança
+# ============================================================================
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Ambiente para destruir (prd, dev, hml)'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - hml
+          - prd
+      confirm_destroy:
+        description: 'Digite "DESTRUIR" em letras maiúsculas para confirmar a exclusão da infraestrutura AWS'
+        required: true
+        default: 'NAO'
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: 'us-east-1'
+
+jobs:
+  destroy:
+    name: "💥 Destroy AWS API Gateway Infrastructure"
+    # Só executa se a confirmação digitada for exatamente "DESTRUIR"
+    if: ${{ github.event.inputs.confirm_destroy == 'DESTRUIR' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ${{ github.event.inputs.environment }}
+
+    env:
+      ENV: ${{ github.event.inputs.environment }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }} # Necessário para AWS Academy / LabRole
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.8.5"
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="bucket=fiap-repairshop2" \
+            -backend-config="key=terraform-config/apigateway-tfstate/${ENV}/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}"
+
+      - name: Terraform Destroy
+        run: |
+          terraform destroy -auto-approve -var-file="environments/${ENV}.tfvars"
+
+      - name: Generate Destroy Summary
+        if: always()
+        run: |
+          echo "## 💥 AWS API Gateway Destroy Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Parâmetro | Valor |" >> $GITHUB_STEP_SUMMARY
+          echo "| :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Ambiente Destruído** | \`${{ env.ENV }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Disparado por** | \`${{ github.actor }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Status da Execução** | \`${{ job.status }}\` |" >> $GITHUB_STEP_SUMMARY
