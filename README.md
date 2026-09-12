@@ -135,6 +135,34 @@ flowchart TD
 
 ---
 
+### 🔐 Secrets do GitHub Actions (AWS Academy & Deploy)
+
+Para que a pipeline de CI/CD execute o provisionamento do API Gateway HTTP v2 via Terraform, o repositório requer as seguintes **Actions Secrets** (*Settings > Secrets and variables > Actions*):
+
+> [!TIP]
+> Em contas da **AWS Academy**, as credenciais são temporárias (sessões de 3 a 4 horas). Por essa razão, a inclusão do `AWS_SESSION_TOKEN` é mandatória para autenticação da role `LabRole` e prevenção de falhas de `ExpiredToken`.
+
+| Secret | Obrigatório | Descrição |
+| :--- | :---: | :--- |
+| `AWS_ACCESS_KEY_ID` | **Sim** | Chave de acesso temporária fornecida no console do AWS Academy. |
+| `AWS_SECRET_ACCESS_KEY` | **Sim** | Chave secreta de acesso correspondente. |
+| `AWS_SESSION_TOKEN` | **Sim** | Token da sessão temporária (necessário para o `LabRole`). |
+
+💡 *Dica de Automação:* Utilize o script [`update_aws_secrets.ps1`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-wiki-docs/blob/main/update_aws_secrets.ps1) disponível no repositório `tech-challenge-wiki-docs` para atualizar essas credenciais em todos os 7 repositórios da organização simultaneamente via GitHub CLI.
+
+---
+
+### 🌐 Variáveis de Ambiente e Terraform Inputs
+
+| Variável / Parâmetro | Origem / Localização | Valor Padrão | Descrição |
+| :--- | :--- | :--- | :--- |
+| `AWS_REGION` | Pipeline `env` / Terraform | `us-east-1` | Região da AWS para deploy do API Gateway. |
+| `S3_TFSTATE_BUCKET` | Backend S3 / Workflow | `fiap-repairshop2` | Bucket S3 para o estado remoto `terraform-config/apigateway-tfstate/${ENV}`. |
+| `USE_DYNAMIC_LB_LOOKUP` | `environments/*.tfvars` | `true` | Habilita busca dinâmica via tag do Load Balancer (NLB) do EKS. |
+| `APP_LB_URL` | `environments/*.tfvars` | `""` | URL estática de fallback caso o lookup dinâmico esteja desabilitado. |
+
+---
+
 ## 🔀 Governança de Branches e Ciclo de Promoção (Git Flow)
 
 A governança do repositório segue isolamento estrito com aprovação controlada para promoção de ambientes:
