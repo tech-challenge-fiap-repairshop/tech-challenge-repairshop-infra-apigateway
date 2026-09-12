@@ -96,3 +96,4 @@ resource "aws_apigatewayv2_route" "app_root_route" {
   route_key = "ANY /"
   target    = "integrations/${aws_apigatewayv2_integration.app_root.id}"
 }
+
