@@ -100,7 +100,7 @@ flowchart TD
 
     A["🎯 Disparo / Trigger\n• Push ou PR (main, homolog, dev)\n• Workflow Dispatch Manual"]:::triggerStyle
     A --> B["⚙️ Autenticação AWS\n(Configure AWS Credentials / IAM LabRole)"]:::stepStyle
-    B --> C["📦 Garantia do Bucket S3\n(Verifica/Cria fiap-repairshop2)"]:::stepStyle
+    B --> C["📦 Garantia do Bucket S3\n(Verifica/Cria fiap-repairshop-{ACCOUNT_ID})"]:::stepStyle
     C --> D["⚡ Setup & Terraform Init\n(S3: terraform-config/apigateway-tfstate/${ENV})"]:::stepStyle
     D --> E["📝 Geração do Plano\n(terraform plan -var-file=environments/${ENV}.tfvars)"]:::stepStyle
     E --> F{"🌿 Branch é 'main' com Push\nou Dispatch Manual?"}:::gateStyle
@@ -118,7 +118,7 @@ flowchart TD
 | :--- | :--- | :--- |
 | **1. Checkout repository** | Obtém o código na versão do commit. | Garante a integridade da versão dos manifests Terraform a serem aplicados. |
 | **2. Configure AWS Credentials** | Autentica via IAM Secrets (`LabRole`). | Sessão segura com a AWS sem chaves estáticas gravadas no repositório. |
-| **3. Ensure S3 Bucket State** | Valida a existência do bucket `fiap-repairshop2`. | Previne quebras durante a inicialização do backend remoto S3. |
+| **3. Ensure S3 Bucket State** | Valida a existência do bucket `fiap-repairshop-{ACCOUNT_ID}`. | Previne quebras durante a inicialização do backend remoto S3. |
 | **4. Setup Terraform** | Configura a versão fixa `1.8.5` da CLI Terraform. | Reprodutibilidade e previsibilidade da infraestrutura como código. |
 | **5. Terraform Init** | Inicializa os plugins e conecta ao state do API Gateway. | Garante o isolamento estrito de estado em relação aos clusters e bancos de dados. |
 | **6. Terraform Plan** | Gera o plano de execução para o ambiente selecionado. | Valida se a integração com a Lambda e o Load Balancer descoberto estão corretos. |
@@ -157,7 +157,7 @@ Para que a pipeline de CI/CD execute o provisionamento do API Gateway HTTP v2 vi
 | Variável / Parâmetro | Origem / Localização | Valor Padrão | Descrição |
 | :--- | :--- | :--- | :--- |
 | `AWS_REGION` | Pipeline `env` / Terraform | `us-east-1` | Região da AWS para deploy do API Gateway. |
-| `S3_TFSTATE_BUCKET` | Backend S3 / Workflow | `fiap-repairshop2` | Bucket S3 para o estado remoto `terraform-config/apigateway-tfstate/${ENV}`. |
+| `S3_TFSTATE_BUCKET` | Backend S3 / Workflow | `fiap-repairshop-{ACCOUNT_ID}` | Bucket S3 para o estado remoto `terraform-config/apigateway-tfstate/${ENV}`. |
 | `USE_DYNAMIC_LB_LOOKUP` | `environments/*.tfvars` | `true` | Habilita busca dinâmica via tag do Load Balancer (NLB) do EKS. |
 | `APP_LB_URL` | `environments/*.tfvars` | `""` | URL estática de fallback caso o lookup dinâmico esteja desabilitado. |
 
@@ -197,7 +197,7 @@ Caso deseje executar o provisionamento localmente:
 ```bash
 # 1. Inicialize o Terraform com o backend remoto S3
 terraform init \
-  -backend-config="bucket=fiap-repairshop2" \
+  -backend-config="bucket=fiap-repairshop-{ACCOUNT_ID}" \
   -backend-config="key=terraform-config/apigateway-tfstate/dev/terraform.tfstate" \
   -backend-config="region=us-east-1"
 
