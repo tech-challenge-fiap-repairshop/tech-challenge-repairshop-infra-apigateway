@@ -1,221 +1,114 @@
-# 🚀 RepairShop — Infraestrutura do API Gateway (AWS HTTP API v2)
+# 🚪🌐 Repair Shop — Infra API Gateway (`infra-apigateway`)
 
-[![Terraform](https://img.shields.io/badge/Terraform-1.8.5+-844FBA?logo=terraform&logoColor=white)](https://www.terraform.io/)
-[![AWS API Gateway](https://img.shields.io/badge/AWS-API%20Gateway%20v2-FF4F8B?logo=amazon-aws&logoColor=white)](https://aws.amazon.com/api-gateway/)
-[![AWS Lambda](https://img.shields.io/badge/AWS-Lambda%20Auth-FF9900?logo=awslambda&logoColor=white)](https://aws.amazon.com/lambda/)
-[![Kubernetes EKS](https://img.shields.io/badge/AWS-EKS%20Backend-326CE5?logo=kubernetes&logoColor=white)](https://aws.amazon.com/eks/)
-[![GitHub Actions](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-2088FF?logo=github-actions&logoColor=white)](https://github.com/features/actions)
+[![CI/CD Pipeline](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-infra-apigateway/actions/workflows/ci-cd-apigateway.yml/badge.svg)](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-infra-apigateway/actions/workflows/ci-cd-apigateway.yml)
+[![Terraform](https://img.shields.io/badge/Terraform-1.8.5-7B42BC?logo=terraform&logoColor=white)](https://www.terraform.io/)
+[![AWS API Gateway v2](https://img.shields.io/badge/Amazon-API%20Gateway%20(HTTP%20API%20v2)-FF4F8B?logo=amazonapigateway&logoColor=white)](https://aws.amazon.com/api-gateway/)
 
-Repositório de **Infraestrutura como Código (IaC)** responsável pelo provisionamento do **AWS API Gateway (HTTP API v2)** do ecossistema **RepairShop** (FIAP Tech Challenge — Fase 3).
-
-O API Gateway atua como o **Ponto Único de Entrada (Single Entry Point / Edge Router)** da solução, gerenciando o tráfego externo e roteando de forma transparente entre o microsserviço de autenticação Serverless (AWS Lambda) e o backend principal executando no cluster Kubernetes (Amazon EKS).
+Repositório de **Infraestrutura como Código (Terraform)** que provisiona o **Single Entry Point** da plataforma **Repair Shop (Tech Challenge FIAP — 15SOAT)** usando **Amazon API Gateway (HTTP API v2)**. Centraliza e roteia todo o tráfego externo para o **AWS Lambda Auth** e dinamicamente para os **Network Load Balancers (NLBs)** dos 4 microsserviços no **Amazon EKS**, padronizando **CORS** e preservando a propagação de traces OpenTelemetry (`traceparent`, `tracestate`).
 
 ---
 
-## 🎯 Propósito e Estratégia Arquitetural
+## 📋 Índice
 
-A infraestrutura utiliza o **AWS API Gateway v2 (HTTP API)** devido à sua altíssima vazão, suporte nativo a CORS, baixa latência e custo reduzido em relação às REST APIs clássicas:
-
-1. **Roteamento Especializado de Autenticação (`POST /auth/login`):**
-   - Rota integrada diretamente à função **AWS Lambda** (`repairshop-lambda-auth`).
-   - Processa a validação de CPF e credenciais, emitindo o token JWT assinado.
-2. **Roteamento de Backend via Proxy Transparente (`ANY /{proxy+}`):**
-   - Rota catch-all que repassa transparentemente todo o tráfego da API de negócio (`/customers`, `/vehicles`, `/service-orders`, `/insumes`, `/invoices`, `/swagger-ui/*`) para o Load Balancer do EKS.
-3. **Descoberta Dinâmica de Load Balancer (Zero Hardcoding):**
-   - O Terraform utiliza um Data Source AWS (`data "aws_lb" "app_k8s"`) que busca em tempo real o DNS gerado pelo Network Load Balancer (NLB) do Kubernetes através da tag:
-     ```text
-     kubernetes.io/service-name = "repairshop/repairshop-service"
-     ```
-   - Elimina acoplamento com zonas DNS do Route 53 e evita que alterações no backend exijam modificações nos contratos do API Gateway.
+- [Mapa de Rotas e Descoberta Dinâmica de NLBs](#mapa-de-rotas-e-descoberta-dinâmica-de-nlbs)
+- [Arquitetura Atual — Motivação e Benefícios dos Componentes](#arquitetura-atual--motivação-e-benefícios-dos-componentes)
+- [Por que DynamoDB em vez de Banco Relacional atrás do Gateway?](#por-que-dynamodb-em-vez-de-banco-relacional-atrás-do-gateway)
+- [Como Executar e Validar Localmente (Terraform)](#como-executar-e-validar-localmente-terraform)
+- [Como Executar em Produção (Esteira CI/CD GitHub Actions)](#como-executar-em-produção-esteira-cicd-github-actions)
+- [Documentação Técnica e Collection do Postman](#documentação-técnica-e-collection-do-postman)
 
 ---
 
-## 🏗️ Topologia da Arquitetura do API Gateway
+## Mapa de Rotas e Descoberta Dinâmica de NLBs
 
-```mermaid
-flowchart LR
-    %% Definições de Estilo
-    classDef clientStyle fill:#ECEFF1,stroke:#607D8B,stroke-width:2px,color:#263238
-    classDef apigwStyle fill:#FCE4EC,stroke:#C2185B,stroke-width:2px,color:#880E4F
-    classDef routeStyle fill:#EDE7F6,stroke:#512DA8,stroke-width:1.5px,color:#311B92
-    classDef lambdaStyle fill:#FFF3E0,stroke:#E65100,stroke-width:2px,color:#BF360C
-    classDef nlbStyle fill:#E1F5FE,stroke:#0288D1,stroke-width:2px,color:#01579B
-    classDef eksStyle fill:#E8EAF6,stroke:#303F9F,stroke-width:2px,color:#1A237E
+Conforme definido em [`main.tf`](main.tf), a API `repairshop-apigw-${var.environment}` utiliza stage **`$default`** com **`auto_deploy = true`** e CORS configurando os headers OpenTelemetry **`traceparent`** e **`tracestate`**:
 
-    Client["📱 Clientes / Web / Mobile\n(Internet Pública)"]:::clientStyle -->|"HTTPS (Porta 443)"| APIGW["🚪 AWS API Gateway HTTP v2\n(repairshop-api-gateway)"]:::apigwStyle
-    
-    subgraph Routes["🧭 Estratégia de Roteamento de Entrada"]
-        direction TB
-        AuthRoute["🔐 POST /auth/login\n(Autenticação Serverless)"]:::routeStyle
-        ProxyRoute["🌐 ANY /{proxy+}\n(Catch-all Proxy Transparente)"]:::routeStyle
-    end
+### Roteamento Multi-Destino (Lambda + 4 Microsserviços EKS)
 
-    subgraph AWS_Compute["☁️ Camada de Computação e Execução (VPC Privada)"]
-        Lambda["⚡ AWS Lambda Auth\n(Java 21 Clean Arch / JWT)"]:::lambdaStyle
-        NLB["⚖️ AWS Network Load Balancer\n(Kubernetes Service / Porta 8080)"]:::nlbStyle
-        EKSPods["☸️ EKS App Pods\n(Spring Boot / Swagger UI)"]:::eksStyle
-    end
-
-    APIGW --> AuthRoute -->|"AWS_PROXY Integration"| Lambda
-    APIGW --> ProxyRoute -->|"HTTP_PROXY Integration"| NLB
-    NLB --> EKSPods
-```
-
----
-
-## 🗂️ Estrutura de Arquivos
-
-```text
-.
-├── .github/workflows/
-│   ├── ci-cd-apigateway.yml  # Pipeline principal de CI/CD (Build, Test & Deploy)
-│   └── destroy.yml           # Pipeline de destruição controlada com Safety Gate
-├── main.tf                   # API Gateway v2, Rotas, Integrações e Data Source do LB
-├── variables.tf              # Declaração das variáveis (ambiente, service_name, etc.)
-├── outputs.tf                # Export da URL pública do API Gateway (`api_endpoint`)
-├── providers.tf              # Configuração do provedor AWS
-├── backend.tf                # Configuração do backend remoto S3
-├── environments/
-│   ├── dev.tfvars            # Parâmetros de Desenvolvimento
-│   ├── hml.tfvars            # Parâmetros de Homologação
-│   └── prd.tfvars            # Parâmetros de Produção
-└── README.md
-```
-
----
-
-## 🚀 Pipeline de CI/CD (GitHub Actions)
-
-A esteira de integração e entrega contínua do API Gateway é automatizada pelo workflow [`.github/workflows/ci-cd-apigateway.yml`](.github/workflows/ci-cd-apigateway.yml).
-
-### Desenho da Pipeline CI/CD
-
-```mermaid
-flowchart TD
-    classDef triggerStyle fill:#E1F5FE,stroke:#0288D1,stroke-width:2px,color:#01579B
-    classDef stepStyle fill:#F3E5F5,stroke:#7B1FA2,stroke-width:2px,color:#4A148C
-    classDef gateStyle fill:#FFF9C4,stroke:#FBC02D,stroke-width:2px,color:#F57F17
-    classDef deployStyle fill:#E8F5E9,stroke:#388E3C,stroke-width:2px,color:#1B5E20
-    classDef reportStyle fill:#ECEFF1,stroke:#455A64,stroke-width:2px,color:#263238
-
-    A["🎯 Disparo / Trigger\n• Push ou PR (main, homolog, dev)\n• Workflow Dispatch Manual"]:::triggerStyle
-    A --> B["⚙️ Autenticação AWS\n(Configure AWS Credentials / IAM LabRole)"]:::stepStyle
-    B --> C["📦 Garantia do Bucket S3\n(Verifica/Cria fiap-repairshop-{ACCOUNT_ID})"]:::stepStyle
-    C --> D["⚡ Setup & Terraform Init\n(S3: terraform-config/apigateway-tfstate/${ENV})"]:::stepStyle
-    D --> E["📝 Geração do Plano\n(terraform plan -var-file=environments/${ENV}.tfvars)"]:::stepStyle
-    E --> F{"🌿 Branch é 'main' com Push\nou Dispatch Manual?"}:::gateStyle
-    
-    F -- "✅ Sim (Deploy Aprovado)" --> G["🚀 Terraform Apply\n(terraform apply -auto-approve)"]:::deployStyle
-    F -- "🛡️ Não (PR ou Homologação)" --> H["📋 Modo Dry-Run / Plan Only\n(Validação de Rotas e Integrações)"]:::reportStyle
-    
-    G --> I["📊 GitHub Step Summary\n(Exporta URL Pública do API Gateway)"]:::reportStyle
-    H --> I
-```
-
-### Detalhamento e Justificativa de Cada Passo da Pipeline
-
-| Passo | Ação Executada | Justificativa Arquitetural |
+| Contexto / Destino | Tipo de Integração | Rotas Expostas no API Gateway |
 | :--- | :--- | :--- |
-| **1. Checkout repository** | Obtém o código na versão do commit. | Garante a integridade da versão dos manifests Terraform a serem aplicados. |
-| **2. Configure AWS Credentials** | Autentica via IAM Secrets (`LabRole`). | Sessão segura com a AWS sem chaves estáticas gravadas no repositório. |
-| **3. Ensure S3 Bucket State** | Valida a existência do bucket `fiap-repairshop-{ACCOUNT_ID}`. | Previne quebras durante a inicialização do backend remoto S3. |
-| **4. Setup Terraform** | Configura a versão fixa `1.8.5` da CLI Terraform. | Reprodutibilidade e previsibilidade da infraestrutura como código. |
-| **5. Terraform Init** | Inicializa os plugins e conecta ao state do API Gateway. | Garante o isolamento estrito de estado em relação aos clusters e bancos de dados. |
-| **6. Terraform Plan** | Gera o plano de execução para o ambiente selecionado. | Valida se a integração com a Lambda e o Load Balancer descoberto estão corretos. |
-| **7. Terraform Apply** | Aplica as configurações do API Gateway na AWS. | Deploy automatizado apenas para commits aprovados na branch `main` ou disparo manual. |
-| **8. Generate Summary** | Publica os outputs (incluindo URL do Gateway) no `$GITHUB_STEP_SUMMARY`. | Dá visibilidade instantânea do endpoint público gerado para testes imediatos. |
+| **`lambda-auth`** (`repairshop-lambda-auth-{env}`) | `AWS_PROXY` (Payload v2.0) | `POST /auth/login` |
+| **`app-register-service`** *(NLB EKS)* | `HTTP_PROXY` | `POST /auth/register`, `ANY /customers`, `ANY /customers/{proxy+}`, `ANY /vehicles`, `ANY /vehicles/{proxy+}` |
+| **`app-service-order-execution-service`** *(NLB EKS)* | `HTTP_PROXY` | `ANY /service-orders`, `ANY /service-orders/{proxy+}`, `POST /execute_task/{proxy+}`, `POST /increment_execution_task/{proxy+}` |
+| **`app-payment-service`** *(NLB EKS)* | `HTTP_PROXY` | `ANY /payment/{proxy+}`, `ANY /payments`, `ANY /payments/{proxy+}` |
+| **`app-notification-service`** *(NLB EKS)* | `HTTP_PROXY` | `ANY /notifications`, `ANY /notifications/{proxy+}` |
 
-### 💡 Decisão de Arquitetura: Estratégia de Único Job (Single Job)
-
-> **Decisão Arquitetural:** Toda a pipeline do API Gateway roda em um **único JOB (`runs-on: ubuntu-latest`)**.
-> 
-> **Motivação Técnica:**
-> 1. **Economia de Minutos de Execução:** Como o API Gateway provisiona recursos leves e rápidos (tempo médio de 1 a 2 minutos), dividir o pipeline em múltiplos jobs adicionaria tempo de fila para novos runners, consumindo desnecessariamente o limite da conta GitHub.
-> 2. **Reaproveitamento de Estado e Contexto AWS:** Mantém as credenciais e conexões do Terraform inicializadas no runner, otimizando o tempo de feedback para o desenvolvedor.
+> **Zero IPs Hardcoded**: O Terraform utiliza `data "aws_lbs" "services"` buscando pela tag `"kubernetes.io/service-name" = "${var.k8s_namespace}/${each.value}"` para descobrir automaticamente os DNS dos Network Load Balancers criados pelo EKS para os 4 microsserviços.
 
 ---
 
-### 🔐 Secrets do GitHub Actions (AWS Academy & Deploy)
+## Arquitetura Atual — Motivação e Benefícios dos Componentes
 
-Para que a pipeline de CI/CD execute o provisionamento do API Gateway HTTP v2 via Terraform, o repositório requer as seguintes **Actions Secrets** (*Settings > Secrets and variables > Actions*):
-
-> [!TIP]
-> Em contas da **AWS Academy**, as credenciais são temporárias (sessões de 3 a 4 horas). Por essa razão, a inclusão do `AWS_SESSION_TOKEN` é mandatória para autenticação da role `LabRole` e prevenção de falhas de `ExpiredToken`.
-
-| Secret | Obrigatório | Descrição |
-| :--- | :---: | :--- |
-| `AWS_ACCESS_KEY_ID` | **Sim** | Chave de acesso temporária fornecida no console do AWS Academy. |
-| `AWS_SECRET_ACCESS_KEY` | **Sim** | Chave secreta de acesso correspondente. |
-| `AWS_SESSION_TOKEN` | **Sim** | Token da sessão temporária (necessário para o `LabRole`). |
-
-💡 *Dica de Automação:* Utilize o script [`update_aws_secrets.ps1`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-wiki-docs/blob/main/update_aws_secrets.ps1) disponível no repositório `tech-challenge-wiki-docs` para atualizar essas credenciais em todos os 7 repositórios da organização simultaneamente via GitHub CLI.
+| Pilar / Tecnologia | Papel no Ecossistema | Motivação Técnica e Pontos Positivos |
+| :--- | :--- | :--- |
+| **RDS (PostgreSQL 16)** | Persistência relacional cadastral ([`infra-db-rds`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-infra-db-rds)) | Protegido atrás do `register-service` em sub-rede privada, assegurando integridade referencial (`ACID`, FK, `UNIQUE`) nas rotas `/customers`, `/vehicles` e `/auth/register`. |
+| **DynamoDB (NoSQL)** | Persistência de OS e Pagamentos ([`infra-db-dynamo`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-infra-db-dynamo)) | Sustenta alta concorrência nas rotas `/service-orders`, `/execute_task`, `/payments` e webhooks externos com escala `PAY_PER_REQUEST`, Single-Table Design e GSIs rápidos. |
+| **ElastiCache (Redis 7.0)** | Cache em memória ([`infra-redis`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-infra-redis)) | Disponível em sub-rede privada (`6379`) para o `register-service`, preparando cache distribuído sub-milissegundo após o login para aliviar leituras repetitivas no RDS. |
+| **Apps (Lambda Auth + EKS)** | **Destinos diretos deste Gateway** ([`lambda-auth`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-lambda-auth) + [`infra-eks`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-infra-eks)) | Combina autenticação serverless com elasticidade instantânea (`POST /auth/login`) com microsserviços especializados rodando no **EKS 1.31** sob HPA. |
+| **Amazon SQS (Mensageria + DLQ)** | Coreografia assíncrona nos bastidores ([`infra-sqs`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-infra-sqs)) | Mantém respostas HTTP do Gateway rápidas e desacopladas ao delegar aprovações, notificações e confirmações de pagamento para 5 filas + 5 DLQs em Saga Coreografada. |
+| **API Gateway (HTTP API v2)** | **Camada provisionada por este repositório** | Substitui o REST API v1 entregando menor custo e menor latência de proxy, oculta a topologia interna privada (VPC), unifica políticas de CORS e preserva o contexto de trace W3C logo na borda pública. |
+| **Observabilidade (Grafana)** | OpenTelemetry + Prometheus + Loki + Jaeger + Grafana | A permissão explícita de `traceparent` e `tracestate` no CORS permite correlação de traces desde o cliente HTTP passando pelo Gateway e Lambda até os pods e filas SQS, visualizados nos 11 dashboards Grafana. |
 
 ---
 
-### 🌐 Variáveis de Ambiente e Terraform Inputs
+## Por que DynamoDB em vez de Banco Relacional atrás do Gateway?
 
-| Variável / Parâmetro | Origem / Localização | Valor Padrão | Descrição |
-| :--- | :--- | :--- | :--- |
-| `AWS_REGION` | Pipeline `env` / Terraform | `us-east-1` | Região da AWS para deploy do API Gateway. |
-| `S3_TFSTATE_BUCKET` | Backend S3 / Workflow | `fiap-repairshop-{ACCOUNT_ID}` | Bucket S3 para o estado remoto `terraform-config/apigateway-tfstate/${ENV}`. |
-| `USE_DYNAMIC_LB_LOOKUP` | `environments/*.tfvars` | `true` | Habilita busca dinâmica via tag do Load Balancer (NLB) do EKS. |
-| `APP_LB_URL` | `environments/*.tfvars` | `""` | URL estática de fallback caso o lookup dinâmico esteja desabilitado. |
+Embora o Gateway roteie tanto para domínios relacionais (`/customers`, `/vehicles`) quanto para domínios NoSQL (`/service-orders`, `/payments`), a separação no backend é estratégica:
 
----
-
-## 🔀 Governança de Branches e Ciclo de Promoção (Git Flow)
-
-A governança do repositório segue isolamento estrito com aprovação controlada para promoção de ambientes:
-
-```mermaid
-flowchart LR
-    classDef branchDev fill:#E3F2FD,stroke:#1E88E5,stroke-width:2px,color:#0D47A1
-    classDef branchHml fill:#FFF3E0,stroke:#FB8C00,stroke-width:2px,color:#E65100
-    classDef branchMain fill:#E8F5E9,stroke:#43A047,stroke-width:2px,color:#1B5E20
-    classDef gateStyle fill:#FFEBEE,stroke:#E53935,stroke-width:2px,color:#B71C1C
-
-    Dev["🌿 Feature / Fix / Chore\n(feat/*, fix/*, chore/*)"]:::branchDev
-    PR_HML{"Pull Request\npara homolog"}:::gateStyle
-    HML["🛡️ Branch homolog\n(Ambiente hml / Validação)"]:::branchHml
-    PR_MAIN{"Pull Request\npara main"}:::gateStyle
-    Main["🚀 Branch main\n(Deploy em Produção)"]:::branchMain
-
-    Dev -->|"Abertura de PR"| PR_HML
-    PR_HML -->|"Validação & Merge"| HML
-    HML -->|"Abertura de PR de Promoção"| PR_MAIN
-    PR_MAIN -->|"Aprovação Manual Obrigatória"| Main
-```
-
-> ⚠️ **Regra de Governança:** É expressamente proibido commit ou push direto na branch `main`. Toda alteração deve passar pelo pipeline de validação e aprovação formal.
+1. **Absorção elástica de picos vindos do Gateway sem esgotar conexões**: Webhooks do Mercado Pago (`/payments/webhook`) e chamadas de atualização de execução de OS escalam pods no EKS via HPA. Um RDS centralizado (`db.t3.micro`) sofreria exaustão de pool JDBC sob rajadas; o DynamoDB opera via HTTPS *stateless* com capacidade automática `PAY_PER_REQUEST`.
+2. **Leitura consolidada de agregados em único salto**: Chamadas `GET /service-orders/{id}` e `GET /payment/{serviceOrderId}` leem toda a partição `ORDER#<id>` ou `BILLING#<id>` (metadados, histórico de 12 estados, execuções, faturas) sem `JOIN`s custosos.
+3. **Evolução sem bloqueios + despacho assíncrono via GSIs**: Atributos de gateway e contingência evoluem sem *locks* de `ALTER TABLE`, enquanto `TransactWriteItems` garante atomicidade e os GSIs aceleram o despacho para SQS.
 
 ---
 
-## 💻 Execução e Deploy Local (Terraform CLI)
+## Como Executar e Validar Localmente (Terraform)
 
-Caso deseje executar o provisionamento localmente:
+> **Pré-requisitos**: **Terraform `1.8.5`**, **AWS CLI v2** autenticado e os **4 microsserviços já implantados no EKS** (pois `main.tf` consulta os NLBs existentes na AWS via `data "aws_lbs"`).
 
 ```bash
-# 1. Inicialize o Terraform com o backend remoto S3
+# Na raiz do repositório (main.tf fica no diretório raiz)
 terraform init \
-  -backend-config="bucket=fiap-repairshop-{ACCOUNT_ID}" \
+  -backend-config="bucket=SEU_BUCKET_TERRAFORM_STATE" \
   -backend-config="key=terraform-config/apigateway-tfstate/dev/terraform.tfstate" \
   -backend-config="region=us-east-1"
 
-# 2. Visualize o plano de execução
+terraform fmt -check -recursive
+terraform validate
 terraform plan -var-file="environments/dev.tfvars"
+```
 
-# 3. Aplique as modificações na AWS
-terraform apply -var-file="environments/dev.tfvars"
+Para validar sintaxe HCL localmente sem acessar a AWS:
+```bash
+terraform init -backend=false
+terraform validate
 ```
 
 ---
 
-## 🔗 Links e Integrações no Ecossistema
+## Como Executar em Produção (Esteira CI/CD GitHub Actions)
 
-- **Swagger UI / OpenAPI 3.0:** Acessível via API Gateway em: `https://<api-gateway-id>.execute-api.us-east-1.amazonaws.com/swagger-ui/index.html`
-- **Coleção Postman:** [`tech-challenge-repairshop-app/docs/postman/`](file:///c:/Users/Alexandre-AGAMIN/Projetos-%20FIAP/github-organizations-projects/tech-challenge-repairshop-app/docs/postman/)
-- **Repositórios Integrados:**
-  - [`tech-challenge-repairshop-lambda-auth`](https://github.com/fiap-postech-repairshop/tech-challenge-repairshop-lambda-auth) (Destino da rota `POST /auth/login`)
-  - [`tech-challenge-repairshop-app`](https://github.com/fiap-postech-repairshop/tech-challenge-repairshop-app) (Destino da rota `ANY /{proxy+}`)
-  - [`tech-challenge-repairshop-infra-eks`](https://github.com/fiap-postech-repairshop/tech-challenge-repairshop-infra-eks) (Cluster Kubernetes onde o Load Balancer reside)
-  - [`tech-challenge-repairshop-infra-network`](https://github.com/fiap-postech-repairshop/tech-challenge-repairshop-infra-network) (Rede Base)
+Definida em [`.github/workflows/ci-cd-apigateway.yml`](.github/workflows/ci-cd-apigateway.yml) e destruição controlada em [`.github/workflows/destroy.yml`](.github/workflows/destroy.yml).
+
+### Gatilho e Fluxo da Esteira
+- **Gatilho**: `push` e `pull_request` na branch **`main`** (quando há alteração em `*.tf`, `environments/**` ou `.github/workflows/ci-cd-apigateway.yml`).
+- **State Remoto S3**: `terraform-config/apigateway-tfstate/${ENV}/terraform.tfstate` no bucket `AWS_TERRAFORM_STATE_BUCKET`.
+- **Etapas**: `terraform fmt -check` -> `terraform init` -> `terraform validate` -> `terraform plan` -> `terraform apply -auto-approve` (no push em `main`).
+
+> **Posição na Ordem Oficial de Provisionamento**: Este repositório deve ser **o último a ser provisionado** (5º estágio), **após** o deploy dos 4 microsserviços no EKS e do `lambda-auth`, permitindo que o `data "aws_lbs"` localize todos os Load Balancers ativos.
+
+---
+
+## Documentação Técnica e Collection do Postman
+
+- **Arquivos Terraform deste Repositório**: [`main.tf`](main.tf) | [`environments/dev.tfvars`](environments/dev.tfvars) | [`environments/hml.tfvars`](environments/hml.tfvars) | [`environments/prd.tfvars`](environments/prd.tfvars)
+- **ADRs, RFCs e Diagramas**:
+  - [ADRs (`ADR-001` a `ADR-013`)](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-app-service-order-execution-service/blob/main/ADRs/README.md)
+  - [RFCs (`RFC-001` a `RFC-014`)](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-app-service-order-execution-service/blob/main/RFCs/README.md)
+  - [`Diagrama de Infraestrutura Cloud`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-app-service-order-execution-service/blob/main/docs/delivery/infrastructure/repairshop-diagrama-infra-cloud.svg)
+  - [`Diagrama de Sequência — Auth e Abertura de OS`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-app-service-order-execution-service/blob/main/docs/delivery/sequence/diagrama_sequencia_auth_abertura_os.drawio.png)
+- **Postman Collections & Environments (Organização)**:
+  - Collection Principal: [`Repair Shop (Tech Challenge FIAP)`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-app-service-order-execution-service/blob/main/docs/postman/Repair%20Shop%20%28Tech%20Challenge%20FIAP%29.postman_collection.json)
+  - Collection Completa: [`Tech Challenge FIAP - Completo`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-app-service-order-execution-service/blob/main/docs/postman/Tech_Challenge_Fiap_-_Completo.postman_collection.json)
+  - Environment Local: [`Local.postman_environment.json`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-app-service-order-execution-service/blob/main/docs/postman/Local.postman_environment.json)
+  - Guia do Postman: [`docs/postman/README.md`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-app-service-order-execution-service/blob/main/docs/postman/README.md)
+- **Dashboards Grafana (11 JSONs)**: [`dashboards/`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-app-service-order-execution-service/tree/main/local/observability/grafana/dashboards)
